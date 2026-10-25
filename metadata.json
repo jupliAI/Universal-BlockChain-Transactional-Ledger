@@ -1,0 +1,6 @@
+{
+  "name": "Universal Blockchain Transaction Ledger (UBTL)",
+  "description": "Provider-neutral enterprise blockchain transaction ledger implementing Switching Gateway API compatibility, Hyperledger Fabric integration, deterministic canonical hashing, and transactional outbox.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

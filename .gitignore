@@ -1,0 +1,12 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Local build output and test scratch (may contain transient logs/credentials)
+.switching-build/
+.e2e-tmp/
