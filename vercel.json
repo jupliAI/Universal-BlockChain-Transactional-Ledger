@@ -1,0 +1,26 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "vite",
+  "buildCommand": "vite build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    {
+      "source": "/health",
+      "destination": "https://REPLACE-WITH-VPS-HOST/health"
+    },
+    {
+      "source": "/v1/:path*",
+      "destination": "https://REPLACE-WITH-VPS-HOST/v1/:path*"
+    }
+  ],
+  "headers": [
+    {
+      "source": "/health",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    },
+    {
+      "source": "/v1/:path*",
+      "headers": [{ "key": "Cache-Control", "value": "no-store" }]
+    }
+  ]
+}

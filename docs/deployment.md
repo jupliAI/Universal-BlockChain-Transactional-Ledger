@@ -402,3 +402,161 @@ that cannot be regenerated:
   `database.probe=reachable`), `GET /v1/admin/outbox` (no runaway
   `deadLetterCount`), and `GET /v1/admin/reconciliation` (no unexpected growth in
   `unresolvedCount`).
+
+---
+
+### 8. Vercel Dashboard + VPS API (Hybrid Hosting)
+
+This is the supported way to "deploy on Vercel": **Vercel hosts the dashboard
+only**; the UBTL service keeps running as the long-lived process of §3 on a VPS.
+Machine-to-machine traffic never traverses Vercel.
+
+#### 8.1 Topology
+
+```
+ [ Browser ]                             [ Switching ]            [ Fabric Provider ]
+      |                                       |                          ^
+      | HTTPS                                 | HTTPS (signed)           | gRPC/mTLS
+      v                                       v                          | (cert files)
+ +-----------------------------+        +-----------------------------------------------+
+ | Vercel (static dashboard)   |        |  VPS: UBTL API + Worker + Reconciliation       |
+ |  /            -> dist/      |        |       (server.ts, NODE_ENV=production)         |
+ |  /v1/:path*   -> rewrite ---)------->|  POST /v1/transactions   GET /v1/transactions  |
+ |  /health      -> rewrite ---)        |  GET  /v1/health         /v1/admin/*           |
+ +-----------------------------+        +-----------------------------------------------+
+                                                        |
+                                                        v
+                                          [ Neon PostgreSQL (serverless pooler) ]
+```
+
+- **Vercel** serves `dist/` (the React dashboard) and transparently proxies the
+  dashboard's relative calls (`/v1/*`, `/health`) to the VPS API.
+- **VPS** runs the complete service: ingestion, transactional outbox dispatch,
+  webhook delivery, the reconciliation scheduler and the Fabric adapter.
+- **Neon** is the single durable store, reached only from the VPS.
+
+#### 8.2 Why the API is not a Vercel Function
+
+| Constraint | Consequence |
+| :--- | :--- |
+| No long-running process in a serverless runtime | The outbox worker (`OUTBOX_POLL_INTERVAL_MS` poll loop) and the reconciliation scheduler cannot run per-request; a cron-driven flush would break the single-owner `SELECT ... FOR UPDATE SKIP LOCKED` claim. |
+| Ephemeral filesystem | `FABRIC_GATEWAY_TLS_CERT_PATH` / `CLIENT_CERT_PATH` / `CLIENT_KEY_PATH` are read from disk; provider mode cannot be bootstrapped, so `/v1/transactions/verify` could only ever answer in mock mode — a non-authoritative answer on a public endpoint. |
+| No static egress IP | Hyperledger Fabric peer/orderer allow-lists cannot be satisfied. |
+| Function build step | Vercel compiles TypeScript functions with a `ts-node` fork that emits `.js` while leaving import specifiers untouched (the TypeScript compiler does not rewrite import paths). This repository imports every module with an explicit `.ts` extension, so those specifiers would not resolve at runtime. |
+
+Hosting the API on the VPS also keeps a single writer per outbox event and
+preserves the byte-exact inbound request body required by the Switching HMAC
+contract.
+
+#### 8.3 Step 1 — VPS: run the full service
+
+1. Node.js 22 LTS, plus `git`. Pull the repository and install:
+   ```
+   npm ci
+   ```
+2. Apply the schema to the target database (once per environment):
+   ```
+   npx prisma migrate deploy
+   ```
+   Never run migrations, seeds or data deletion before the target
+   database/schema has been verified explicitly.
+3. Configure the environment (§8.5), then start:
+   ```
+   NODE_ENV=production npm start        # tsx server.ts, no build step for the API
+   ```
+   Run it under a supervisor (`systemd`, PM2 or a container) so it restarts on
+   failure. `npm run build` only builds the dashboard assets and is **not**
+   required for the API.
+   With `NODE_ENV=production` the Vite dev middleware is disabled, so the VPS
+   process serves the API only — the dashboard comes from Vercel.
+4. Terminate TLS in front of it (nginx/Caddy/Traefik) on a public hostname, e.g.
+   `https://ubtl-api.example.com`. The service itself listens on
+   `HOST:PORT` and must not be reachable over plain HTTP from the internet.
+5. Point Switching at `https://ubtl-api.example.com` for both directions: set
+   its `UBTL_BASE_URL` / gateway endpoint to the VPS host (not to Vercel) and
+   keep `SWITCHING_BASE_URL` on the VPS pointing at Switching. This keeps the
+   signed raw body on a single hop.
+
+#### 8.4 Step 2 — Vercel: dashboard + proxy
+
+1. Import the repository (`jupliAI/Universal-BlockChain-Transactional-Ledger`).
+   `vercel.json` pins the Vite preset, `buildCommand: vite build` and
+   `outputDirectory: dist`, so no dashboard code changes are needed: the UI
+   already calls relative paths (`/v1/health`, `/v1/transactions`,
+   `/v1/admin/*`).
+2. Edit `vercel.json` and replace `REPLACE-WITH-VPS-HOST` (two occurrences) with
+   the VPS public hostname from §8.3 step 4 — hostname only, no scheme, no
+   trailing slash:
+   ```json
+   "destination": "https://ubtl-api.example.com/v1/:path*"
+   ```
+3. No environment variables are required on Vercel for this topology: the proxy
+   forwards the dashboard's headers (including `X-Api-Key`) to the VPS, and all
+   secrets stay on the VPS.
+4. Deploy. The build produces only static assets; it never connects to the
+   database and never bundles Prisma.
+
+#### 8.5 VPS environment variables
+
+Mandatory for a production VPS (see §3.1 for the full list):
+
+| Variable | Value |
+| :--- | :--- |
+| `NODE_ENV` | `production` — enables the `[AUTH_FAIL_FAST]` / `[PERSISTENCE_FAIL_FAST]` / `[SIGNATURE_FAIL_FAST]` guards. |
+| `DATABASE_URL` | Neon **pooled** endpoint, e.g. `postgresql://USER:PASSWORD@ep-xxxx-pooler.<region>.aws.neon.tech/ubtl_db?sslmode=require&pgbouncer=true&connection_limit=5`. |
+| `UBTL_PERSISTENCE_BACKEND` | `postgres` — refuses to start on an unreachable or non-durable store. |
+| `UBTL_API_KEY` | Strong, unique Switching ingestion key. The published development default is rejected in production. |
+| `UBTL_ADMIN_API_KEY` | Strong, unique admin key for `/v1/admin/*`. Different from the ingestion key. |
+| `SWITCHING_BASE_URL` | `https://switching.example.com` — where lifecycle webhooks are delivered. |
+| `SWITCHING_WEBHOOK_API_KEY` | `X-Api-Key` sent on every outbound callback (must match Switching's value). |
+| `SWITCHING_WEBHOOK_SIGNING_SECRET` | HMAC secret UBTL signs callbacks with (`x-gateway-signature`). |
+| `SWITCHING_OUTBOUND_SIGNING_SECRET` + `SWITCHING_OUTBOUND_SIGNATURE_REQUIRED=true` | Verify Switching's inbound signature (`x-switching-signature`). Both sides must hold the same secret. |
+| `BLOCKCHAIN_ADAPTER_MODE` | `mock` until the Fabric prerequisites of §4 and `docs/provider-requirements.md` §5 are available; then `provider` plus the `FABRIC_GATEWAY_*` values. |
+
+Notes on the Neon pooled URL:
+
+- `pgbouncer=true` is **required** with the `-pooler` hostname: the pooler runs
+  PgBouncer in transaction mode, which is incompatible with Prisma's prepared
+  statements. Without it, queries fail intermittently under concurrency.
+- `connection_limit` should stay **small** (5 is a good starting point): the
+  pooler multiplexes, and every extra direct connection consumes Neon's
+  connection budget. The outbox worker and reconciliation scheduler share the
+  same Prisma client pool, so 5 is ample for a single instance.
+- `sslmode=require` is mandatory for Neon.
+- Use the **unpooled** hostname for `npx prisma migrate deploy` if the pooler
+  rejects DDL/transactional migrations in your region; the runtime
+  (`DATABASE_URL`) keeps the pooled one.
+
+#### 8.6 Verification
+
+1. VPS directly: `curl -s https://ubtl-api.example.com/v1/health` → `status`
+   `healthy` and `database.probe: "reachable"`.
+2. Through the proxy: `curl -s https://<project>.vercel.app/v1/health` →
+   the same JSON, with the `X-Correlation-Id` header echoed. A `502`/`504` here
+   while step 1 succeeds means the `vercel.json` destination is wrong.
+3. Admin path through the proxy:
+   `curl -s -H "X-Api-Key: $UBTL_ADMIN_API_KEY" https://<project>.vercel.app/v1/admin/outbox`
+   → outbox metrics and recent events.
+4. Dashboard: open `https://<project>.vercel.app`; the health card must show
+   `adapterMode`, `database` and worker figures from the VPS.
+5. End-to-end: submit one transaction from Switching to the **VPS** host and
+   confirm the callback is delivered to Switching (outbox
+   `completedCount` increases, `deadLetterCount` stays `0`).
+
+#### 8.7 Limits of this topology
+
+- **`/v1/admin/*` becomes internet-reachable through the Vercel URL.** Every
+  admin endpoint still requires `X-Api-Key: <UBTL_ADMIN_API_KEY>`; treat that key
+  as a production secret and never embed it in the dashboard bundle or a URL.
+  Remove the `/v1/:path*` rewrite if only the public ingest/read surface should
+  be proxied.
+- The bundled dashboard calls `/v1/admin/transactions` **without** an API key,
+  so that list renders empty (pre-existing behaviour, independent of the proxy).
+- Vercel is a pass-through hop for the dashboard only; deleting or renaming the
+  rewrite breaks the UI but never the Switching ↔ UBTL contract.
+- Traffic proxied by Vercel consumes platform invocation/transfer quotas. If the
+  dashboard is only used internally, restricting it with Vercel Deployment
+  Protection (or dropping the proxy) is preferred.
+- `SWITCHING_BASE_URL` and Switching's target URL must both be the VPS host, so
+  the HMAC scope (`${timestamp}.${rawBody}`) is computed over exactly the bytes
+  the peer sent and no intermediary rewrites the body.
