@@ -174,6 +174,7 @@ export default function App() {
   const [idempotencyKey, setIdempotencyKey] = useState<string>(`idemp-${Date.now().toString().slice(-6)}`);
   const [payloadText, setPayloadText] = useState<string>(JSON.stringify(TEMPLATES.SALE, null, 2));
   const [apiKey, setApiKey] = useState<string>('ubtl_dev_key_secret_switch_2026');
+  const [adminError, setAdminError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [submitResponse, setSubmitResponse] = useState<any>(null);
 
@@ -193,10 +194,19 @@ export default function App() {
         setHealth(hData);
       }
 
-      const txRes = await fetch('/v1/admin/transactions?limit=25');
+      const txRes = await fetch('/v1/admin/transactions?limit=25', {
+        headers: { 'X-Api-Key': apiKey },
+      });
       if (txRes.ok) {
         const txData = await txRes.json();
         setTransactions(txData.transactions || []);
+        setAdminError(null);
+      } else {
+        const body = await txRes.json().catch(() => null);
+        setTransactions([]);
+        setAdminError(
+          `HTTP ${txRes.status}${body?.errorCode ? ` ${body.errorCode}` : ''} — the admin endpoint rejected the X-Api-Key value.`
+        );
       }
     } catch (e) {
       console.error('Error fetching data:', e);
@@ -207,7 +217,7 @@ export default function App() {
     fetchHealthAndData();
     const interval = setInterval(fetchHealthAndData, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [apiKey]);
 
   const handleTemplateChange = (type: string) => {
     setTxType(type);
