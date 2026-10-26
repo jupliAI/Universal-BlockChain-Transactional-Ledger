@@ -316,7 +316,26 @@ async function bootstrap() {
   // Operational & Admin API Endpoints (admin-authorized)
   app.get('/v1/admin/transactions', requireAdmin, async (req, res) => {
     const limit = parseInt((req.query.limit as string) || '50', 10);
-    res.json({ transactions: await transactionsService.getAll(limit) });
+    const transactionType = typeof req.query.transactionType === 'string' ? req.query.transactionType.trim() : '';
+    const search = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 200) : '';
+
+    try {
+      res.json({
+        transactions: await transactionsService.getAll(limit, {
+          transactionType: transactionType || undefined,
+          search: search || undefined,
+        }),
+      });
+    } catch (error) {
+      // Express 4 does not forward rejected promises from async handlers, so
+      // without this catch an unexpected query failure would terminate the
+      // whole process instead of returning an error to the caller.
+      console.error('[UBTL] Admin ledger query failed:', error);
+      res.status(500).json({
+        errorCode: 'LEDGER_QUERY_FAILED',
+        message: error instanceof Error ? error.message : 'Ledger query failed',
+      });
+    }
   });
 
   app.get('/v1/admin/outbox', requireAdmin, async (_req, res) => {

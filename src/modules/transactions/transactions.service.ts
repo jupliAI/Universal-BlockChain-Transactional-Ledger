@@ -14,7 +14,7 @@ import {
 import { HashingService, HashVerificationResult } from '../canonicalization/hashing.service.ts';
 import { TransactionTypeRegistry } from './registry/transaction-type-registry.ts';
 import { InMemoryTransactionRepository } from './repository/in-memory-transaction.repository.ts';
-import { StorageMetadata, TransactionRepository } from './repository/transaction.repository.ts';
+import { StorageMetadata, TransactionQueryFilter, TransactionRepository } from './repository/transaction.repository.ts';
 import {
   ExternalSwitchingStatus,
   InternalLifecycleState,
@@ -355,8 +355,8 @@ export class TransactionsService {
     return this.repository.findByGatewayRequestId(gatewayRequestId);
   }
 
-  async getAll(limit = 100): Promise<TransactionRecord[]> {
-    return this.repository.getAll(limit);
+  async getAll(limit = 100, filter: TransactionQueryFilter = {}): Promise<TransactionRecord[]> {
+    return this.repository.getAll(limit, filter);
   }
 
   /**

@@ -18,6 +18,17 @@ export interface InitialStatusHistorySpec {
   details?: Record<string, unknown>;
 }
 
+/**
+ * Read-side narrowing applied by `getAll`. Both fields are optional and are
+ * additive: omitted means "no constraint on this dimension".
+ */
+export interface TransactionQueryFilter {
+  /** Exact match on `transactionType` (e.g. `PURCHASE`). Case-sensitive by design. */
+  transactionType?: string;
+  /** Case-insensitive substring match across the identifier columns. */
+  search?: string;
+}
+
 export interface TransactionRepository {
   readonly storageMetadata: StorageMetadata;
   /**
@@ -34,5 +45,5 @@ export interface TransactionRepository {
   findByGatewayRequestId(gatewayRequestId: string): Promise<TransactionRecord | null>;
   findByIdempotencyKey(organizationId: string, idempotencyKey: string): Promise<TransactionRecord | null>;
   update(transaction: TransactionRecord): Promise<void>;
-  getAll(limit?: number): Promise<TransactionRecord[]>;
+  getAll(limit?: number, filter?: TransactionQueryFilter): Promise<TransactionRecord[]>;
 }

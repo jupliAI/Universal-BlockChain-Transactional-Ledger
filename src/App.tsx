@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ShieldCheck,
   Blocks,
@@ -25,6 +25,7 @@ import {
   Search,
   BookOpen,
   Hash,
+  ArrowUpDown,
 } from 'lucide-react';
 
 interface HealthData {
@@ -179,6 +180,38 @@ export default function App() {
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [submitResponse, setSubmitResponse] = useState<any>(null);
 
+  // Ledger table view state. `q` and `transactionType` are applied SERVER-side
+  // (the admin endpoint narrows in the database); sorting is applied locally to
+  // the returned page.
+  const [txSearch, setTxSearch] = useState<string>('');
+  const [txQuery, setTxQuery] = useState<string>('');
+  const [txTypeFilter, setTxTypeFilter] = useState<string>('');
+  const [txSort, setTxSort] = useState<{ key: 'type' | 'submittedAt'; dir: 'asc' | 'desc' }>({
+    key: 'submittedAt',
+    dir: 'desc',
+  });
+
+  const visibleTransactions = useMemo(
+    () =>
+      [...transactions].sort((a, b) => {
+        const cmp =
+          txSort.key === 'type'
+            ? a.transactionType.localeCompare(b.transactionType)
+            : new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime();
+        return txSort.dir === 'asc' ? cmp : -cmp;
+      }),
+    [transactions, txSort]
+  );
+
+  const toggleTxSort = (key: 'type' | 'submittedAt') => {
+    setTxSort((prev) =>
+      prev.key === key ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { key, dir: 'asc' }
+    );
+  };
+
+  const sortCaret = (key: 'type' | 'submittedAt') =>
+    txSort.key === key ? (txSort.dir === 'asc' ? '▲' : '▼') : '';
+
   // Verification State
   const [verifyGatewayId, setVerifyGatewayId] = useState<string>('');
   const [verifyResult, setVerifyResult] = useState<any>(null);
@@ -199,7 +232,11 @@ export default function App() {
         setTransactions([]);
         setAdminError('Enter the UBTL_ADMIN_API_KEY below to load the ledger.');
       } else {
-        const txRes = await fetch('/v1/admin/transactions?limit=25', {
+        const params = new URLSearchParams({ limit: '25' });
+        if (txQuery) params.set('q', txQuery);
+        if (txTypeFilter) params.set('transactionType', txTypeFilter);
+
+        const txRes = await fetch(`/v1/admin/transactions?${params.toString()}`, {
           headers: { 'X-Api-Key': adminApiKey },
         });
         if (txRes.ok) {
@@ -208,9 +245,12 @@ export default function App() {
           setAdminError(null);
         } else {
           const body = await txRes.json().catch(() => null);
+          const status = `HTTP ${txRes.status}${body?.errorCode ? ` ${body.errorCode}` : ''}`;
           setTransactions([]);
           setAdminError(
-            `HTTP ${txRes.status}${body?.errorCode ? ` ${body.errorCode}` : ''} — this endpoint requires UBTL_ADMIN_API_KEY, not the Switching ingestion key.`
+            txRes.status === 401
+              ? `${status} — this endpoint requires UBTL_ADMIN_API_KEY, not the Switching ingestion key.`
+              : `${status} — ${body?.message || 'the ledger query failed; check the backend logs.'}`
           );
         }
       }
@@ -219,14 +259,25 @@ export default function App() {
     }
   };
 
+  // Debounced so that typing a query does not spend one admin request per
+  // keystroke — the ledger is re-fetched by the polling effect below.
+  useEffect(() => {
+    const timer = setTimeout(() => setTxQuery(txSearch.trim()), 400);
+    return () => clearTimeout(timer);
+  }, [txSearch]);
+
   useEffect(() => {
     fetchHealthAndData();
     const interval = setInterval(fetchHealthAndData, 3000);
     return () => clearInterval(interval);
-  }, [apiKey, adminApiKey]);
+  }, [apiKey, adminApiKey, txQuery, txTypeFilter]);
 
   const handleTemplateChange = (type: string) => {
     setTxType(type);
+    // A different transaction type is a different logical transaction: reusing
+    // the previous idempotency key would be rejected by the backend with
+    // IDEMPOTENCY_CONFLICT (same key, different payload/type).
+    setIdempotencyKey(`idemp-${Date.now().toString().slice(-6)}`);
     if (TEMPLATES[type]) {
       setPayloadText(JSON.stringify(TEMPLATES[type], null, 2));
     }
@@ -661,11 +712,38 @@ export default function App() {
                   Universal Ledger Records ({transactions.length})
                 </h2>
                 <p className="text-xs text-zinc-400">
-                  Transactions ingested via Gateway API with atomic outbox dispatch and blockchain proofs
+                  {txQuery || txTypeFilter
+                    ? `Server-side filter${txTypeFilter ? ` · transactionType=${txTypeFilter}` : ''}${
+                        txQuery ? ` · q="${txQuery}"` : ''
+                      } · newest 25 matches`
+                    : 'Transactions ingested via Gateway API with atomic outbox dispatch and blockchain proofs'}
                 </p>
               </div>
 
               <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Search className="w-3.5 h-3.5 text-zinc-500 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={txSearch}
+                    onChange={(e) => setTxSearch(e.target.value)}
+                    placeholder="Search correlation, idempotency key, hash, full UUID..."
+                    className="w-72 bg-zinc-950 border border-zinc-800 rounded-lg pl-8 pr-3 py-1.5 text-xs font-mono text-zinc-200 placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <select
+                  value={txTypeFilter}
+                  onChange={(e) => setTxTypeFilter(e.target.value)}
+                  title="Filter by transaction type (applied server-side)"
+                  className="bg-zinc-950 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-indigo-500"
+                >
+                  <option value="">All types</option>
+                  {Object.keys(TEMPLATES).map((type) => (
+                    <option key={type} value={type}>
+                      {type}
+                    </option>
+                  ))}
+                </select>
                 <button
                   onClick={fetchHealthAndData}
                   className="px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-xs text-zinc-300 flex items-center gap-1.5 font-mono"
@@ -704,23 +782,53 @@ export default function App() {
                   <thead className="bg-zinc-950/80 text-zinc-400 border-b border-zinc-800 uppercase text-[10px] tracking-wider">
                     <tr>
                       <th className="py-3 px-4">Gateway Request ID</th>
-                      <th className="py-3 px-4">Type</th>
+                      <th className="py-3 px-4">
+                        <button
+                          onClick={() => toggleTxSort('type')}
+                          title="Sort by transaction type"
+                          className={`flex items-center gap-1.5 uppercase tracking-wider hover:text-zinc-200 ${
+                            txSort.key === 'type' ? 'text-indigo-300' : ''
+                          }`}
+                        >
+                          <ArrowUpDown className="w-3 h-3" />
+                          Type {sortCaret('type')}
+                        </button>
+                      </th>
                       <th className="py-3 px-4">Status</th>
                       <th className="py-3 px-4">Block Height</th>
                       <th className="py-3 px-4">Payload Hash (SHA-256)</th>
-                      <th className="py-3 px-4">Submitted</th>
+                      <th className="py-3 px-4">
+                        <button
+                          onClick={() => toggleTxSort('submittedAt')}
+                          title="Sort by submission time"
+                          className={`flex items-center gap-1.5 uppercase tracking-wider hover:text-zinc-200 ${
+                            txSort.key === 'submittedAt' ? 'text-indigo-300' : ''
+                          }`}
+                        >
+                          <ArrowUpDown className="w-3 h-3" />
+                          Submitted {sortCaret('submittedAt')}
+                        </button>
+                      </th>
                       <th className="py-3 px-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-zinc-800/60 text-zinc-300">
-                    {transactions.length === 0 ? (
+                    {transactions.length === 0 && (txQuery || txTypeFilter) ? (
+                      <tr>
+                        <td colSpan={7} className="py-12 text-center text-zinc-500 font-sans">
+                          No transactions match this filter. The search runs server-side across the whole ledger:
+                          correlation id, idempotency key and payload hash match as substrings, while the request id
+                          must be a complete UUID.
+                        </td>
+                      </tr>
+                    ) : transactions.length === 0 ? (
                       <tr>
                         <td colSpan={7} className="py-12 text-center text-zinc-500 font-sans">
                           No transactions recorded yet. Use the Gateway Ingestion tab to submit your first proposal.
                         </td>
                       </tr>
                     ) : (
-                      transactions.map((tx) => (
+                      visibleTransactions.map((tx) => (
                         <tr key={tx.gatewayRequestId} className="hover:bg-zinc-800/30 transition-colors">
                           <td className="py-3 px-4 text-indigo-300 font-bold">
                             {tx.gatewayRequestId.slice(0, 8)}...

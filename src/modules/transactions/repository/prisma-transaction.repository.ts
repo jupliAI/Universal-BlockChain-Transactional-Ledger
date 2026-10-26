@@ -7,8 +7,12 @@ import { InitialOutboxEventSpec, TransactionRecord } from '../transactions.servi
 import {
   InitialStatusHistorySpec,
   StorageMetadata,
+  TransactionQueryFilter,
   TransactionRepository,
 } from './transaction.repository.ts';
+
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 export class PrismaTransactionRepository implements TransactionRepository {
   readonly storageMetadata: StorageMetadata = {
@@ -163,9 +167,33 @@ export class PrismaTransactionRepository implements TransactionRepository {
     });
   }
 
-  async getAll(limit = 100): Promise<TransactionRecord[]> {
+  async getAll(limit = 100, filter: TransactionQueryFilter = {}): Promise<TransactionRecord[]> {
     if (!this.prismaClient) return [];
+
+    // Both dimensions are ANDed; each is omitted entirely when not supplied so
+    // the unfiltered call keeps its original query plan (no `where` clause).
+    const where: Record<string, unknown> = {};
+    if (filter.transactionType) {
+      where.transactionType = filter.transactionType;
+    }
+    if (filter.search) {
+      // `gatewayRequestId` maps to a PostgreSQL `uuid` column, so Prisma exposes
+      // it as `UuidFilter`, which has no `contains`/`startsWith`. Only a complete
+      // UUID can be matched there; the remaining columns are text and support
+      // case-insensitive substring search.
+      const or: Record<string, unknown>[] = [
+        { correlationId: { contains: filter.search, mode: 'insensitive' } },
+        { idempotencyKey: { contains: filter.search, mode: 'insensitive' } },
+        { payloadHash: { contains: filter.search, mode: 'insensitive' } },
+      ];
+      if (UUID_PATTERN.test(filter.search)) {
+        or.push({ gatewayRequestId: { equals: filter.search } });
+      }
+      where.OR = or;
+    }
+
     const rows = await this.prismaClient.transaction.findMany({
+      where,
       take: limit,
       orderBy: { createdAt: 'desc' },
     });

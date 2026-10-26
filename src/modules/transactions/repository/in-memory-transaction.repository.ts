@@ -9,8 +9,12 @@ import { InitialOutboxEventSpec, TransactionRecord } from '../transactions.servi
 import {
   InitialStatusHistorySpec,
   StorageMetadata,
+  TransactionQueryFilter,
   TransactionRepository,
 } from './transaction.repository.ts';
+
+const UUID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 export class InMemoryTransactionRepository implements TransactionRepository {
   readonly storageMetadata: StorageMetadata = {
@@ -142,8 +146,24 @@ export class InMemoryTransactionRepository implements TransactionRepository {
     this.transactions.set(transaction.gatewayRequestId, { ...transaction });
   }
 
-  async getAll(limit = 100): Promise<TransactionRecord[]> {
+  async getAll(limit = 100, filter: TransactionQueryFilter = {}): Promise<TransactionRecord[]> {
+    const needle = filter.search?.toLowerCase();
+    const type = filter.transactionType;
+
     return Array.from(this.transactions.values())
+      .filter((tx) => (type ? tx.transactionType === type : true))
+      .filter((tx) => {
+        if (!needle) return true;
+        // Mirrors PrismaTransactionRepository: `gatewayRequestId` is a uuid
+        // column there, so only a complete UUID matches it, while the text
+        // columns support case-insensitive substring matching.
+        return (
+          tx.correlationId.toLowerCase().includes(needle) ||
+          tx.idempotencyKey.toLowerCase().includes(needle) ||
+          (tx.payloadHash ?? '').toLowerCase().includes(needle) ||
+          (UUID_PATTERN.test(needle) && tx.gatewayRequestId.toLowerCase() === needle)
+        );
+      })
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
       .slice(0, limit);
   }
