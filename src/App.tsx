@@ -174,6 +174,7 @@ export default function App() {
   const [idempotencyKey, setIdempotencyKey] = useState<string>(`idemp-${Date.now().toString().slice(-6)}`);
   const [payloadText, setPayloadText] = useState<string>(JSON.stringify(TEMPLATES.SALE, null, 2));
   const [apiKey, setApiKey] = useState<string>('ubtl_dev_key_secret_switch_2026');
+  const [adminApiKey, setAdminApiKey] = useState<string>('');
   const [adminError, setAdminError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [submitResponse, setSubmitResponse] = useState<any>(null);
@@ -194,19 +195,24 @@ export default function App() {
         setHealth(hData);
       }
 
-      const txRes = await fetch('/v1/admin/transactions?limit=25', {
-        headers: { 'X-Api-Key': apiKey },
-      });
-      if (txRes.ok) {
-        const txData = await txRes.json();
-        setTransactions(txData.transactions || []);
-        setAdminError(null);
-      } else {
-        const body = await txRes.json().catch(() => null);
+      if (adminApiKey.trim() === '') {
         setTransactions([]);
-        setAdminError(
-          `HTTP ${txRes.status}${body?.errorCode ? ` ${body.errorCode}` : ''} — the admin endpoint rejected the X-Api-Key value.`
-        );
+        setAdminError('Enter the UBTL_ADMIN_API_KEY below to load the ledger.');
+      } else {
+        const txRes = await fetch('/v1/admin/transactions?limit=25', {
+          headers: { 'X-Api-Key': adminApiKey },
+        });
+        if (txRes.ok) {
+          const txData = await txRes.json();
+          setTransactions(txData.transactions || []);
+          setAdminError(null);
+        } else {
+          const body = await txRes.json().catch(() => null);
+          setTransactions([]);
+          setAdminError(
+            `HTTP ${txRes.status}${body?.errorCode ? ` ${body.errorCode}` : ''} — this endpoint requires UBTL_ADMIN_API_KEY, not the Switching ingestion key.`
+          );
+        }
       }
     } catch (e) {
       console.error('Error fetching data:', e);
@@ -217,7 +223,7 @@ export default function App() {
     fetchHealthAndData();
     const interval = setInterval(fetchHealthAndData, 3000);
     return () => clearInterval(interval);
-  }, [apiKey]);
+  }, [apiKey, adminApiKey]);
 
   const handleTemplateChange = (type: string) => {
     setTxType(type);
@@ -668,6 +674,27 @@ export default function App() {
                   Poll Ledger
                 </button>
               </div>
+            </div>
+
+            {adminError ? (
+              <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-950/30 border border-amber-800/40 text-amber-300 text-xs">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                <span>{adminError}</span>
+              </div>
+            ) : null}
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 p-3 rounded-lg bg-zinc-900/60 border border-zinc-800">
+              <label className="text-xs text-zinc-400 shrink-0 flex items-center gap-2">
+                <Lock className="w-3.5 h-3.5 text-zinc-500" />
+                Admin API Key (<code className="text-zinc-500">UBTL_ADMIN_API_KEY</code>)
+              </label>
+              <input
+                type="password"
+                value={adminApiKey}
+                onChange={(e) => setAdminApiKey(e.target.value)}
+                placeholder="Paste the admin key here — kept in memory only, never bundled"
+                className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-200 focus:outline-none focus:border-indigo-500"
+              />
             </div>
 
             {/* Table */}
