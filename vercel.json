@@ -6,11 +6,11 @@
   "rewrites": [
     {
       "source": "/health",
-      "destination": "https://REPLACE-WITH-VPS-HOST/health"
+      "destination": "https://magnetic-llama-assuring.ngrok-free.app/health"
     },
     {
       "source": "/v1/:path*",
-      "destination": "https://REPLACE-WITH-VPS-HOST/v1/:path*"
+      "destination": "https://magnetic-llama-assuring.ngrok-free.app/v1/:path*"
     }
   ],
   "headers": [
